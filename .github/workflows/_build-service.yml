@@ -1,0 +1,128 @@
+name: Build Service
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      image-name:
+        required: true
+        type: string
+      ecr-account:
+        required: true
+        type: string
+      dockerfile-path:
+        required: false
+        type: string
+        default: ''
+      release-type:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: mvlchain-bc-runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract release version from mix.exs
+        id: release-version
+        run: |
+          VERSION=$(grep -m1 'version:' mix.exs | sed 's/.*"\(.*\)".*/\1/')
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ inputs.ecr-account }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile-path || format('deploy/{0}/Dockerfile', inputs.service-name) }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ inputs.version }}
+            CHAIN_TYPE=default
+            RELEASE_VERSION=${{ steps.release-version.outputs.value }}
+          tags: |
+            ${{ inputs.ecr-account }}.dkr.ecr.ap-southeast-1.amazonaws.com/${{ inputs.image-name }}:${{ inputs.version }}
+            ${{ inputs.ecr-account }}.dkr.ecr.ap-southeast-1.amazonaws.com/${{ inputs.image-name }}:${{ inputs.release-type }}-latest
+
+      - name: Request k8s deploy (ArgoCD Image Updater)
+        run: |
+          curl -sf -X POST "${{ secrets.K8S_DEPLOY_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repository\": {\"repo_name\": \"${{ inputs.ecr-account }}.dkr.ecr.ap-southeast-1.amazonaws.com/${{ inputs.image-name }}\"},
+              \"push_data\": {\"tag\": \"${{ inputs.version }}\"}
+            }" || echo "Webhook notification failed, skipping"
+
+      - name: Get git info
+        if: always()
+        id: git-info
+        run: |
+          echo "commit_message=$(git log --format='%s' -n 1)" >> "$GITHUB_OUTPUT"
+          echo "commit_author=$(git log --format='%an' -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Slack notification
+        if: always()
+        uses: slackapi/slack-github-action@v2
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ secrets.SLACK_CHANNEL_ID }}"
+            attachments:
+              - color: "${{ job.status == 'success' && '#00ff00' || '#ff0000' }}"
+                blocks:
+                  - type: header
+                    text:
+                      type: plain_text
+                      text: "${{ job.status == 'success' && ':green_heart:' || ':x:' }} ${{ github.event.repository.name }} - ${{ job.status == 'success' && 'Success :fast_meow_party:' || 'Failed :meow_sad-rain:' }}"
+                      emoji: true
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "*Job:*\n  Deploy ${{ inputs.service-name }}"
+                      - type: mrkdwn
+                        text: "*Branch:*\n ${{ github.ref_name }}"
+                      - type: mrkdwn
+                        text: "*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>"
+                      - type: mrkdwn
+                        text: "*Author:*\n ${{ steps.git-info.outputs.commit_author }}"
+                    accessory:
+                      type: image
+                      image_url: "https://avatars.githubusercontent.com/u/44036562"
+                      alt_text: "GitHub Actions"
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "```${{ steps.git-info.outputs.commit_message }}```"
+                  - type: actions
+                    elements:
+                      - type: button
+                        text:
+                          type: plain_text
+                          text: View Job
+                        style: primary
+                        url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                      - type: button
+                        text:
+                          type: plain_text
+                          text: View Github
+                        style: danger
+                        url: "${{ github.server_url }}/${{ github.repository }}"

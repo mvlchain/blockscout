@@ -1,0 +1,37 @@
+name: Build blockscout
+
+on:
+  push:
+    branches:
+      - testnet
+      - devnet
+    paths:
+      - '.github/workflows/_build-service.yml'
+      - '.github/workflows/_generate-image-tags.yml'
+      - '.github/workflows/build-blockscout.yml'
+      - 'apps/**'
+      - 'config/**'
+      - 'mix.exs'
+      - 'mix.lock'
+      - 'rel/**'
+      - 'docker/Dockerfile'
+
+concurrency:
+  group: build-${{ github.ref }}-blockscout
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/_generate-image-tags.yml
+
+  build:
+    needs: [prepare]
+    uses: ./.github/workflows/_build-service.yml
+    secrets: inherit
+    with:
+      service-name: blockscout
+      image-name: blockscout-backend
+      ecr-account: "335651423390"
+      dockerfile-path: docker/Dockerfile
+      release-type: ${{ needs.prepare.outputs.release-type }}
+      version: ${{ needs.prepare.outputs.image-tag }}

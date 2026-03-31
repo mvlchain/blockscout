@@ -1,0 +1,22 @@
+name: Fast-forward deploy branches on main push
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  updateBranchTestnet:
+    name: Fast-forward testnet branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: testnet
+          fetch-depth: 0
+          token: ${{ secrets.ACTION_CI_TOKEN }}
+      - name: Fast-forward testnet branch to master
+        run: |
+          git fetch origin master
+          git merge --ff-only origin/master
+          git push origin testnet
